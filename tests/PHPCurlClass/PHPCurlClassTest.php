@@ -92,6 +92,53 @@ class CurlTest extends PHPUnit_Framework_TestCase
         )));
     }
 
+    public function testUrl()
+    {
+        $data = array('foo' => 'bar');
+
+        // curl -v --get "http://127.0.0.1:8000/" -d "foo=bar"
+        $test = new Test();
+        $test->server('server', 'GET', $data);
+        $this->assertEquals(Test::TEST_URL, $test->curl->base_url);
+        $this->assertEquals(Test::TEST_URL . '?' . http_build_query($data), $test->curl->url);
+
+        // curl -v --request POST "http://127.0.0.1:8000/" -d "foo=bar"
+        $test = new Test();
+        $test->server('server', 'POST', $data);
+        $this->assertEquals(Test::TEST_URL, $test->curl->base_url);
+        $this->assertEquals(Test::TEST_URL, $test->curl->url);
+
+        // curl -v --request PUT "http://127.0.0.1:8000/" -d "foo=bar"
+        $test = new Test();
+        $test->server('server', 'PUT', $data);
+        $this->assertEquals(Test::TEST_URL, $test->curl->base_url);
+        $this->assertEquals(Test::TEST_URL, $test->curl->url);
+
+        // curl -v --request PATCH "http://127.0.0.1:8000/" -d "foo=bar"
+        $test = new Test();
+        $test->server('server', 'PATCH', $data);
+        $this->assertEquals(Test::TEST_URL, $test->curl->base_url);
+        $this->assertEquals(Test::TEST_URL, $test->curl->url);
+
+        // curl -v --request DELETE "http://127.0.0.1:8000/" -d "foo=bar"
+        $test = new Test();
+        $test->server('server', 'DELETE', $data);
+        $this->assertEquals(Test::TEST_URL, $test->curl->base_url);
+        $this->assertEquals(Test::TEST_URL, $test->curl->url);
+
+        // curl -v --head --get "http://127.0.0.1:8000/" -d "foo=bar"
+        $test = new Test();
+        $test->server('server', 'HEAD', $data);
+        $this->assertEquals(Test::TEST_URL, $test->curl->base_url);
+        $this->assertEquals(Test::TEST_URL . '?' . http_build_query($data), $test->curl->url);
+
+        // curl -v --request OPTIONS "http://127.0.0.1:8000/" -d "foo=bar"
+        $test = new Test();
+        $test->server('server', 'OPTIONS', $data);
+        $this->assertEquals(Test::TEST_URL, $test->curl->base_url);
+        $this->assertEquals(Test::TEST_URL, $test->curl->url);
+    }
+
     public function testPostRequestMethod()
     {
         $test = new Test();
@@ -100,7 +147,7 @@ class CurlTest extends PHPUnit_Framework_TestCase
         )));
     }
 
-    public function testPostContinueResponse()
+    public function testPostContinueResponseHeader()
     {
         // 100 Continue responses may contain additional optional headers per
         // RFC 2616, Section 10.1:
@@ -120,18 +167,16 @@ class CurlTest extends PHPUnit_Framework_TestCase
             'Content-Type: text/plain;charset=UTF-8' . "\r\n" .
             'Server: PHP-Curl-Class' . "\r\n" .
             'Connection: keep-alive' . "\r\n" .
-            "\r\n" .
-            'OK';
+            "\r\n";
 
         $reflector = new ReflectionClass('\Curl\Curl');
-        $reflection_method = $reflector->getMethod('parseResponse');
+        $reflection_method = $reflector->getMethod('parseResponseHeaders');
         $reflection_method->setAccessible(true);
 
         $curl = new Curl();
-        list($response_headers, $response) = $reflection_method->invoke($curl, $response);
+        $response_headers = $reflection_method->invoke($curl, $response);
 
         $this->assertEquals('HTTP/1.1 200 OK', $response_headers['Status-Line']);
-        $this->assertEquals('OK', $response);
     }
 
     public function testPostData()
@@ -222,6 +267,11 @@ class CurlTest extends PHPUnit_Framework_TestCase
         $this->assertEquals('key=value', $test->server('put', 'PUT', array(
             'key' => 'value',
         )));
+
+        $test = new Test();
+        $this->assertEquals('{"key":"value"}', $test->server('put', 'PUT', json_encode(array(
+            'key' => 'value',
+        ))));
     }
 
     public function testPutFileHandle()
@@ -280,6 +330,50 @@ class CurlTest extends PHPUnit_Framework_TestCase
         $this->assertEquals('OPTIONS', $test->curl->response_headers['X-REQUEST-METHOD']);
     }
 
+    public function testDownload()
+    {
+        // Upload a file.
+        $upload_file_path = Helper\get_png();
+        $upload_test = new Test();
+        $upload_test->server('upload_response', 'POST', array(
+            'image' => '@' . $upload_file_path,
+        ));
+        $uploaded_file_path = $upload_test->curl->response->file_path;
+        $this->assertNotEquals($upload_file_path, $uploaded_file_path);
+        $this->assertEquals(md5_file($upload_file_path), $upload_test->curl->response_headers['ETag']);
+
+        // Download the file.
+        $downloaded_file_path = tempnam('/tmp', 'php-curl-class.');
+        $download_test = new Test();
+        $download_test->curl->setHeader('X-DEBUG-TEST', 'download_response');
+        $this->assertTrue($download_test->curl->download(Test::TEST_URL . '?' . http_build_query(array(
+            'file_path' => $uploaded_file_path,
+        )), $downloaded_file_path));
+        $this->assertNotEquals($uploaded_file_path, $downloaded_file_path);
+
+        $this->assertEquals(filesize($upload_file_path), filesize($downloaded_file_path));
+        $this->assertEquals(md5_file($upload_file_path), md5_file($downloaded_file_path));
+        $this->assertEquals(md5_file($upload_file_path), $download_test->curl->response_headers['ETag']);
+
+        // Ensure successive requests set the appropriate values.
+        $this->assertEquals('GET', $download_test->server('server', 'GET', array(
+            'key' => 'REQUEST_METHOD',
+        )));
+        $this->assertFalse(is_bool($download_test->curl->response));
+        $this->assertFalse(is_bool($download_test->curl->raw_response));
+
+        // Remove server file.
+        $this->assertEquals('true', $download_test->server('upload_cleanup', 'POST', array(
+            'file_path' => $uploaded_file_path,
+        )));
+
+        unlink($upload_file_path);
+        unlink($downloaded_file_path);
+        $this->assertFalse(file_exists($upload_file_path));
+        $this->assertFalse(file_exists($uploaded_file_path));
+        $this->assertFalse(file_exists($downloaded_file_path));
+    }
+
     public function testBasicHttpAuth401Unauthorized()
     {
         $test = new Test();
@@ -303,6 +397,12 @@ class CurlTest extends PHPUnit_Framework_TestCase
         $test = new Test();
         $test->curl->setReferrer('myreferrer');
         $this->assertEquals('myreferrer', $test->server('server', 'GET', array(
+            'key' => 'HTTP_REFERER',
+        )));
+
+        $test = new Test();
+        $test->curl->setReferer('myreferer');
+        $this->assertEquals('myreferer', $test->server('server', 'GET', array(
             'key' => 'HTTP_REFERER',
         )));
     }
@@ -404,13 +504,7 @@ class CurlTest extends PHPUnit_Framework_TestCase
     {
         $test = new Test();
         $test->server('error_message', 'GET');
-
-        $expected_response = 'HTTP/1.1 401 Unauthorized';
-        if (defined('HHVM_VERSION')) {
-            $expected_response = 'HTTP/1.1 401';
-        }
-
-        $this->assertEquals($expected_response, $test->curl->error_message);
+        $this->assertEquals('HTTP/1.1 401 Unauthorized', $test->curl->error_message);
     }
 
     public function testHeaders()
@@ -658,6 +752,18 @@ class CurlTest extends PHPUnit_Framework_TestCase
         xmlAssertion('CONTENT-TYPE', 'text/xml;charset=utf-8');
     }
 
+    public function testEmptyResponse()
+    {
+        $response = "\r\n\r\n";
+
+        $reflector = new ReflectionClass('\Curl\Curl');
+        $reflection_method = $reflector->getMethod('parseResponseHeaders');
+        $reflection_method->setAccessible(true);
+
+        $curl = new Curl();
+        $reflection_method->invoke($curl, $response);
+    }
+
     public function testArrayToStringConversion()
     {
         $test = new Test();
@@ -741,6 +847,36 @@ class CurlTest extends PHPUnit_Framework_TestCase
             Test::TEST_URL,
         ), array(
             'key' => 'HTTP_USER_AGENT',
+        ));
+    }
+
+    public function testParallelUrl()
+    {
+        $data = array('foo' => 'bar');
+
+        $test = new Test();
+        $curl = $test->curl;
+        $curl->setHeader('X-DEBUG-TEST', 'server');
+        $curl->complete(function ($instance) use ($data) {
+            PHPUnit_Framework_Assert::assertEquals(Test::TEST_URL, $instance->base_url);
+            PHPUnit_Framework_Assert::assertEquals(Test::TEST_URL . '?' . http_build_query($data), $instance->url);
+        });
+        $curl->get(array(
+            Test::TEST_URL,
+        ), $data);
+    }
+
+    public function testParallelGetOptions()
+    {
+        $test = new Test();
+        $curl = $test->curl;
+        $curl->setHeader('X-DEBUG-TEST', 'server');
+        $curl->setOpt(CURLOPT_USERAGENT, 'useragent');
+        $curl->complete(function ($instance) {
+            PHPUnit_Framework_Assert::assertEquals('useragent', $instance->getOpt(CURLOPT_USERAGENT));
+        });
+        $curl->get(array(
+            Test::TEST_URL,
         ));
     }
 
@@ -927,15 +1063,6 @@ class CurlTest extends PHPUnit_Framework_TestCase
     {
         $curl = new Curl();
         $curl->setOpt(CURLINFO_HEADER_OUT, false);
-    }
-
-    /**
-     * @expectedException PHPUnit_Framework_Error_Warning
-     */
-    public function testRequiredOptionCurlOptHeaderEmitsWarning()
-    {
-        $curl = new Curl();
-        $curl->setOpt(CURLOPT_HEADER, false);
     }
 
     /**

@@ -32,6 +32,8 @@ class Curl
     public $http_status_code = 0;
     public $http_error_message = null;
 
+    public $base_url = null;
+    public $url = null;
     public $request_headers = null;
     public $response_headers = null;
     public $response = null;
@@ -46,7 +48,6 @@ class Curl
         $this->curl = curl_init();
         $this->setDefaultUserAgent();
         $this->setOpt(CURLINFO_HEADER_OUT, true);
-        $this->setOpt(CURLOPT_HEADER, true);
         $this->setOpt(CURLOPT_RETURNTRANSFER, true);
     }
 
@@ -61,7 +62,10 @@ class Curl
             foreach ($url_mixed as $url) {
                 $curl = new Curl();
                 $curl->multi_child = true;
-                $curl->setOpt(CURLOPT_URL, $this->buildURL($url, $data), $curl->curl);
+
+                $curl->base_url = $url;
+                $curl->url = $this->buildURL($url, $data);
+                $curl->setOpt(CURLOPT_URL, $curl->url, $curl->curl);
                 $curl->setOpt(CURLOPT_CUSTOMREQUEST, 'GET');
                 $curl->setOpt(CURLOPT_HTTPGET, true);
                 $this->call($this->before_send_function, $curl);
@@ -99,9 +103,11 @@ class Curl
                 $this->exec($ch);
             }
         } else {
-            $this->setopt(CURLOPT_URL, $this->buildURL($url_mixed, $data));
+            $this->base_url = $url_mixed;
+            $this->url = $this->buildURL($url_mixed, $data);
+            $this->setOpt(CURLOPT_URL, $this->url);
             $this->setOpt(CURLOPT_CUSTOMREQUEST, 'GET');
-            $this->setopt(CURLOPT_HTTPGET, true);
+            $this->setOpt(CURLOPT_HTTPGET, true);
             return $this->exec();
         }
     }
@@ -112,7 +118,9 @@ class Curl
             $this->unsetHeader('Content-Length');
         }
 
-        $this->setOpt(CURLOPT_URL, $this->buildURL($url));
+        $this->base_url = $url;
+        $this->url = $url;
+        $this->setOpt(CURLOPT_URL, $this->url);
         $this->setOpt(CURLOPT_CUSTOMREQUEST, 'POST');
         $this->setOpt(CURLOPT_POST, true);
         $this->setOpt(CURLOPT_POSTFIELDS, $this->postfields($data));
@@ -121,9 +129,11 @@ class Curl
 
     public function put($url, $data = array())
     {
-        $this->setOpt(CURLOPT_URL, $url);
+        $this->base_url = $url;
+        $this->url = $url;
+        $this->setOpt(CURLOPT_URL, $this->url);
         $this->setOpt(CURLOPT_CUSTOMREQUEST, 'PUT');
-        $put_data = http_build_query($data);
+        $put_data = $this->postfields($data);
         if (empty($this->options[CURLOPT_INFILE]) && empty($this->options[CURLOPT_INFILESIZE])) {
             $this->setHeader('Content-Length', strlen($put_data));
         }
@@ -133,8 +143,10 @@ class Curl
 
     public function patch($url, $data = array())
     {
+        $this->base_url = $url;
+        $this->url = $url;
         $this->unsetHeader('Content-Length');
-        $this->setOpt(CURLOPT_URL, $this->buildURL($url));
+        $this->setOpt(CURLOPT_URL, $this->url);
         $this->setOpt(CURLOPT_CUSTOMREQUEST, 'PATCH');
         $this->setOpt(CURLOPT_POSTFIELDS, $data);
         return $this->exec();
@@ -142,15 +154,19 @@ class Curl
 
     public function delete($url, $data = array())
     {
+        $this->base_url = $url;
+        $this->url = $url;
         $this->unsetHeader('Content-Length');
-        $this->setOpt(CURLOPT_URL, $this->buildURL($url, $data));
+        $this->setOpt(CURLOPT_URL, $this->buildURL($this->url, $data));
         $this->setOpt(CURLOPT_CUSTOMREQUEST, 'DELETE');
         return $this->exec();
     }
 
     public function head($url, $data = array())
     {
-        $this->setOpt(CURLOPT_URL, $this->buildURL($url, $data));
+        $this->base_url = $url;
+        $this->url = $this->buildURL($url, $data);
+        $this->setOpt(CURLOPT_URL, $this->url);
         $this->setOpt(CURLOPT_CUSTOMREQUEST, 'HEAD');
         $this->setOpt(CURLOPT_NOBODY, true);
         return $this->exec();
@@ -158,10 +174,33 @@ class Curl
 
     public function options($url, $data = array())
     {
+        $this->base_url = $url;
+        $this->url = $url;
         $this->unsetHeader('Content-Length');
         $this->setOpt(CURLOPT_URL, $this->buildURL($url, $data));
         $this->setOpt(CURLOPT_CUSTOMREQUEST, 'OPTIONS');
         return $this->exec();
+    }
+
+    public function download($url, $filename)
+    {
+        $fh = fopen($filename, 'wb');
+        $this->setOpt(CURLOPT_FILE, $fh);
+        $this->get($url);
+        fclose($fh);
+
+        // Reset CURLOPT_FILE with STDOUT to avoid: "curl_exec(): CURLOPT_FILE
+        // resource has gone away, resetting to default". Using null causes
+        // "curl_setopt(): supplied argument is not a valid File-Handle
+        // resource".
+        $this->setOpt(CURLOPT_FILE, STDOUT);
+
+        // Reset CURLOPT_RETURNTRANSFER to tell cURL to return subsequent
+        // responses as the return value of curl_exec(). Without this,
+        // curl_exec() will revert to returning boolean values.
+        $this->setOpt(CURLOPT_RETURNTRANSFER, true);
+
+        return ! $this->error;
     }
 
     public function setBasicAuthentication($username, $password = '')
@@ -196,6 +235,11 @@ class Curl
         $this->setOpt(CURLOPT_USERAGENT, $user_agent);
     }
 
+    public function setReferer($referer)
+    {
+        $this->setReferrer($referer);
+    }
+
     public function setReferrer($referrer)
     {
         $this->setOpt(CURLOPT_REFERER, $referrer);
@@ -223,7 +267,6 @@ class Curl
 
         $required_options = array(
             CURLINFO_HEADER_OUT    => 'CURLINFO_HEADER_OUT',
-            CURLOPT_HEADER         => 'CURLOPT_HEADER',
             CURLOPT_RETURNTRANSFER => 'CURLOPT_RETURNTRANSFER',
         );
 
@@ -233,6 +276,11 @@ class Curl
 
         $this->options[$option] = $value;
         return curl_setopt($ch, $option, $value);
+    }
+
+    public function getOpt($option)
+    {
+        return $this->options[$option];
     }
 
     public function verbose($on = true)
@@ -309,48 +357,40 @@ class Curl
         return $request_headers;
     }
 
-    private function parseResponse($response)
+    private function parseResponse($response_headers, $raw_response)
     {
-        $response_headers = '';
-        $raw_response = $response;
-        if (!(strpos($response, "\r\n\r\n") === false)) {
-            $response_array = explode("\r\n\r\n", $response);
-            for ($i = count($response_array) - 1; $i >= 0; $i--) {
-                if (stripos($response_array[$i], 'HTTP/') === 0) {
-                    $response_header = $response_array[$i];
-                    $response = implode("\r\n\r\n", array_splice($response_array, $i + 1));
-                    break;
-                }
-            }
-            $response_headers = explode("\r\n", $response_header);
-            if (in_array('HTTP/1.1 100 Continue', $response_headers)) {
-                list($response_header, $response) = explode("\r\n\r\n", $response, 2);
-            }
-            $response_headers = $this->parseResponseHeaders($response_header);
-            $raw_response = $response;
 
-            if (isset($response_headers['Content-Type'])) {
-                if (stripos($response_headers['Content-Type'], 'application/json') === 0) {
-                    $json_obj = json_decode($response, false);
-                    if ($json_obj !== null) {
-                        $response = $json_obj;
-                    }
-                } elseif (preg_match('~^(?:text/|application/(?:atom\+|rss\+)?)xml~i', $response_headers['Content-Type'])) {
-                    $xml_obj = @simplexml_load_string($response);
-                    if (!($xml_obj === false)) {
-                        $response = $xml_obj;
-                    }
+        $response = $raw_response;
+        if (isset($response_headers['Content-Type'])) {
+            if (preg_match('~^application/(?:json|vnd\.api\+json)~i', $response_headers['Content-Type'])) {
+                $json_obj = json_decode($response, false);
+                if ($json_obj !== null) {
+                    $response = $json_obj;
+                }
+            } elseif (preg_match('~^(?:text/|application/(?:atom\+|rss\+)?)xml~i', $response_headers['Content-Type'])) {
+                $xml_obj = @simplexml_load_string($response);
+                if (!($xml_obj === false)) {
+                    $response = $xml_obj;
                 }
             }
         }
 
-        return array($response_headers, $response, $raw_response);
+        return array($response, $raw_response);
     }
 
-    private function parseResponseHeaders($raw_headers)
+    private function parseResponseHeaders($raw_response_headers)
     {
+        $response_header_array = explode("\r\n\r\n", $raw_response_headers);
+        $response_header  = '';
+        for ($i = count($response_header_array) - 1; $i >= 0; $i--) {
+            if (stripos($response_header_array[$i], 'HTTP/') === 0) {
+                $response_header = $response_header_array[$i];
+                break;
+            }
+        }
+
         $response_headers = new CaseInsensitiveArray();
-        list($first_line, $headers) = $this->parseHeaders($raw_headers);
+        list($first_line, $headers) = $this->parseHeaders($response_header);
         $response_headers['Status-Line'] = $first_line;
         foreach ($headers as $key => $value) {
             $response_headers[$key] = $value;
@@ -397,12 +437,19 @@ class Curl
     {
         $ch = $_ch === null ? $this : $_ch;
 
+        $response_headers_fh = fopen('php://memory', 'wb+');
+        $ch->setOpt(CURLOPT_WRITEHEADER, $response_headers_fh);
+
         if ($ch->multi_child) {
             $ch->raw_response = curl_multi_getcontent($ch->curl);
         } else {
             $ch->raw_response = curl_exec($ch->curl);
             $ch->curl_error_code = curl_errno($ch->curl);
         }
+
+        rewind($response_headers_fh);
+        $ch->raw_response_headers = stream_get_contents($response_headers_fh);
+        fclose($response_headers_fh);
 
         $ch->curl_error_message = curl_error($ch->curl);
         $ch->curl_error = !($ch->curl_error_code === 0);
@@ -412,7 +459,8 @@ class Curl
         $ch->error_code = $ch->error ? ($ch->curl_error ? $ch->curl_error_code : $ch->http_status_code) : 0;
 
         $ch->request_headers = $this->parseRequestHeaders(curl_getinfo($ch->curl, CURLINFO_HEADER_OUT));
-        list($ch->response_headers, $ch->response, $ch->raw_response) = $this->parseResponse($ch->raw_response);
+        $ch->response_headers = $this->parseResponseHeaders($ch->raw_response_headers);
+        list($ch->response, $ch->raw_response) = $this->parseResponse($ch->response_headers, $ch->raw_response);
 
         $ch->http_error_message = '';
         if ($ch->error) {
